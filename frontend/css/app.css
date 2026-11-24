@@ -361,3 +361,31 @@ th {
   margin-bottom: 12px;
   font-size: 13px;
 }
+
+.readonly-tag {
+  margin-top: 6px;
+  display: inline-block;
+  border: 1.5px solid var(--bad);
+  color: var(--bad);
+  background: #fee2e2;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  padding: 1px 8px;
+}
+.child-tag {
+  margin-top: 6px;
+  display: inline-block;
+  border: 1.5px dashed var(--steel);
+  color: var(--steel);
+  font-size: 11px;
+  padding: 1px 8px;
+}
+.closed-banner {
+  border: 2px solid var(--bad);
+  background: #fee2e2;
+  color: var(--bad);
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  font-size: 13px;
+  font-weight: 600;
+}

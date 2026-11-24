@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from auth import AuthHeader, require_user, require_writer
+from closure import reject_closed_write
 from db import connect, now_iso, write_audit
 from locks import release, require_lock
 from models import AttestIn
@@ -18,7 +19,7 @@ def list_attestations(authorization: AuthHeader = None):
     require_user(authorization)
     with connect() as conn:
         rows = conn.execute(
-            """SELECT a.*, c.cage_code, c.contract_no
+            """SELECT a.*, c.cage_code, c.contract_no, c.status AS cage_status
                FROM attestations a
                JOIN cages c ON c.id=a.cage_id
                ORDER BY a.id DESC LIMIT 200"""
@@ -40,7 +41,8 @@ def create_attestation(body: AttestIn, authorization: AuthHeader = None):
             ).fetchone()
             if not cage:
                 raise HTTPException(404, "笼不存在")
-            # BUGFIX-12 埋雷：拆笼后原笼仍允许核验（状态门过宽）
+            # 原笼已拆分只读：核验写口零增，落偏航审计后 409
+            reject_closed_write(conn, cage, user, "核验")
             if cage["status"] not in ("已冻结", "核验通过", "部分解笼"):
                 raise HTTPException(409, "仅已冻结笼可核验")
             if float(cage["available"]) <= 0:

@@ -39,7 +39,8 @@ def test_topup_stub_no_balance_change():
     assert any(j["status"] == "空桩登记" for j in jobs)
 
 
-def test_split_stub_no_new_cage():
+def test_split_shadow_path_no_new_cage():
+    """乙路径：影子子笼只留快照，不新增 cages 行、不改原笼可用。"""
     c = TestClient(app)
     h = _auth(c)
     with connect() as conn:

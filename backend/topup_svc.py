@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from auth import AuthHeader, require_user, require_writer
+from closure import reject_closed_write
 from db import connect, now_iso, write_audit
 from locks import release, require_lock
 from models import TopupIn
@@ -41,6 +42,8 @@ def topup_stub(body: TopupIn, authorization: AuthHeader = None):
             ).fetchone()
             if not cage:
                 raise HTTPException(404, "笼不存在")
+            # 原笼已拆分只读：增补写口零增拒收
+            reject_closed_write(conn, cage, user, "增补")
             if cage["status"] not in ("已冻结", "核验通过", "核验违约", "部分解笼", "部分罚没"):
                 raise HTTPException(409, "当前笼状态禁止登记增补空桩")
             now = now_iso()

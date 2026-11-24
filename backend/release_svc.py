@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from auth import AuthHeader, require_user, require_writer
+from closure import reject_closed_write
 from db import connect, now_iso, write_audit
 from locks import release, require_lock
 from models import ReleaseIn
@@ -36,6 +37,8 @@ def do_release(body: ReleaseIn, authorization: AuthHeader = None):
             ).fetchone()
             if not cage:
                 raise HTTPException(404, "笼不存在")
+            # 原笼已拆分只读：解笼出金写口零增拒收
+            reject_closed_write(conn, cage, user, "解笼拨付")
             if cage["status"] != "核验通过":
                 raise HTTPException(409, "仅核验通过的笼可解笼拨付")
             # 核验结论必须对齐当前笼代

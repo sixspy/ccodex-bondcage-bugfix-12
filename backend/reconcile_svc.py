@@ -8,6 +8,16 @@ from db import connect
 
 router = APIRouter(tags=["reconcile"])
 
+ACTIVE_STATUSES = ("已冻结", "核验通过", "核验违约", "部分解笼", "部分罚没")
+
+
+def _has_col(row, name: str) -> bool:
+    try:
+        row[name]
+        return True
+    except (IndexError, KeyError):
+        return False
+
 
 def _reconcile_cage(conn, cage) -> dict:
     cage_id = cage["id"]
@@ -24,8 +34,23 @@ def _reconcile_cage(conn, cage) -> dict:
            WHERE cage_id=? AND status='已罚没' AND cage_generation=?""",
         (cage_id, gen),
     ).fetchone()["s"]
-    accounted = round(float(available) + float(released) + float(forfeited), 6)
+    # 已拆分原笼：切出子笼金额计入「拆出」，原笼可用归零后仍须闭合
+    split_out = conn.execute(
+        """SELECT COALESCE(SUM(amount),0) s FROM cages
+           WHERE parent_cage_id=? AND status!='已回退'""",
+        (cage_id,),
+    ).fetchone()["s"]
+    # 双轨检：同一原笼既关闭又有子笼出金轨 = 假绿；或原笼活跃却存在可拨付孤儿子笼
+    child_live = conn.execute(
+        """SELECT COUNT(*) c FROM cages
+           WHERE parent_cage_id=? AND status IN ('核验通过','部分解笼')""",
+        (cage_id,),
+    ).fetchone()["c"]
+    accounted = round(float(available) + float(released) + float(forfeited) + float(split_out), 6)
     ok = abs(accounted - amount) < 1e-6
+    closed_readonly = bool(int(cage["readonly"] or 0)) if _has_col(cage, "readonly") else False
+    dual_track = bool(closed_readonly and (float(released) > 0 or float(forfeited) > 0))
+    dual_track = dual_track or bool(child_live > 0 and not closed_readonly)
     # 账户侧：该当事人冻结额应覆盖所有仍冻结/核验中的笼可用
     party = cage["party_key"]
     acct = conn.execute(
@@ -51,11 +76,14 @@ def _reconcile_cage(conn, cage) -> dict:
         "accounted": accounted,
         "balanced": ok,
         "gap": round(amount - accounted, 6),
+        "split_out": float(split_out),
+        "closed_readonly": closed_readonly,
+        "dual_track": dual_track,
         "account_balance": float(acct["balance"]) if acct else None,
         "account_frozen": float(acct["frozen"]) if acct else None,
         "live_cage_available": float(live_frozen),
         "proof": {
-            "formula": "available + released + forfeited == amount（同笼代）",
+            "formula": "available + released + forfeited + split_out == amount（同笼代）",
             "left": accounted,
             "right": amount,
         },

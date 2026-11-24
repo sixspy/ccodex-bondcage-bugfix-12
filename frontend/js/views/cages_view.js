@@ -48,20 +48,32 @@ export const cagesViewTemplate = `
           <div class="amt">{{ fmt(c.available) }} / {{ fmt(c.amount) }}</div>
           <div>{{ c.contract_no }} · 代{{ c.generation }}</div>
           <div>{{ c.party_key }} → {{ c.beneficiary }}</div>
+          <div v-if="c.readonly" class="readonly-tag">已拆分 · 只读</div>
+          <div v-else-if="c.parent_cage_id" class="child-tag">拆出子笼</div>
         </div>
       </div>
     </div>
   </div>
   <div v-if="cageDetail">
     <h3>笼详情 · {{ cageDetail.cage.cage_code }}</h3>
+    <div v-if="cageDetail.cage.readonly" class="closed-banner">
+      原笼已拆分只读：核验 / 解笼 / 罚没 / 增补 写口正式拒收，出金只走拆出子笼。
+    </div>
     <table>
       <thead><tr><th>字段</th><th>值</th></tr></thead>
       <tbody>
-        <tr><td>状态</td><td><span class="badge" :class="statusClass(cageDetail.cage.status)">{{ cageDetail.cage.status }}</span></td></tr>
+        <tr><td>状态</td><td><span class="badge" :class="statusClass(cageDetail.cage.status)">{{ cageDetail.cage.status }}</span>
+          <span v-if="cageDetail.cage.readonly" class="badge fail" style="margin-left:6px">只读</span></td></tr>
         <tr><td>可用 / 总额</td><td>{{ fmt(cageDetail.cage.available) }} / {{ fmt(cageDetail.cage.amount) }}</td></tr>
+        <tr><td>父笼</td><td>{{ cageDetail.cage.parent_cage_id || '—' }}</td></tr>
+        <tr><td>关闭原因</td><td>{{ cageDetail.cage.close_reason || '—' }}</td></tr>
         <tr><td>核验条数</td><td>{{ cageDetail.attestations.length }}</td></tr>
         <tr><td>拨付条数</td><td>{{ cageDetail.releases.length }}</td></tr>
         <tr><td>罚没条数</td><td>{{ cageDetail.forfeits.length }}</td></tr>
+        <tr><td>拆出子腿</td><td>{{ (cageDetail.split_legs || []).length }} 条</td></tr>
+        <tr v-if="cageDetail.split_decision"><td>拆笼纪要</td>
+          <td>{{ cageDetail.split_decision.path }} · 原笼 {{ cageDetail.split_decision.closed_status }} ·
+            锁定 {{ cageDetail.split_decision.locked_on }} · 禁翻案</td></tr>
       </tbody>
     </table>
   </div>

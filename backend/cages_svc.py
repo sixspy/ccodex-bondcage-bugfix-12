@@ -10,6 +10,45 @@ from models import CageFreezeIn
 
 router = APIRouter(tags=["cages"])
 
+# 原笼仍活跃的唯一身份：只有已冻结笼可拆/可增补；已拆分笼只读
+LIVE_STATUSES = ("已冻结",)
+
+
+def _cage_dict(row) -> dict:
+    """统一外发口径：readonly 归一为布尔，供前端禁用写入口。"""
+    d = dict(row)
+    d["readonly"] = bool(int(d.get("readonly") or 0))
+    return d
+
+
+def create_child_cage(conn, parent, amount: float, suffix: str, now: str):
+    """拆笼子腿：同义务子笼，冻结额从原笼可用平移，不动账户冻结总额。"""
+    child_code = f"{parent['cage_code']}{suffix}"
+    dup = conn.execute(
+        "SELECT id FROM cages WHERE cage_code=?", (child_code,)
+    ).fetchone()
+    if dup:
+        raise HTTPException(409, "子笼编码已存在，禁止重复拆笼")
+    cur = conn.execute(
+        """INSERT INTO cages(cage_code,party_key,contract_no,amount,available,
+           generation,status,beneficiary,created_at,frozen_at,parent_cage_id,readonly)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,0)""",
+        (
+            child_code,
+            parent["party_key"],
+            parent["contract_no"],
+            float(amount),
+            float(amount),
+            int(parent["generation"]),
+            "已冻结",
+            parent["beneficiary"],
+            now,
+            now,
+            parent["id"],
+        ),
+    )
+    return cur.lastrowid, child_code
+
 
 def _next_cage_code(conn, party_key: str) -> str:
     n = conn.execute(
@@ -28,7 +67,7 @@ def list_cages(authorization: AuthHeader = None, status: str | None = None):
             ).fetchall()
         else:
             rows = conn.execute("SELECT * FROM cages ORDER BY id DESC").fetchall()
-        return {"items": [dict(r) for r in rows]}
+        return {"items": [_cage_dict(r) for r in rows]}
 
 
 @router.get("/api/cages/{cage_id}")
@@ -50,11 +89,22 @@ def get_cage(cage_id: int, authorization: AuthHeader = None):
             "SELECT * FROM forfeits WHERE cage_id=? ORDER BY id DESC",
             (cage_id,),
         ).fetchall()
+        legs = conn.execute(
+            """SELECT l.*, ch.cage_code AS child_code, ch.status AS child_status
+               FROM split_legs l LEFT JOIN cages ch ON ch.id=l.child_cage_id
+               WHERE l.parent_cage_id=? ORDER BY l.id""",
+            (cage_id,),
+        ).fetchall()
+        minutes = conn.execute(
+            "SELECT * FROM split_decisions WHERE cage_id=?", (cage_id,)
+        ).fetchone()
         return {
-            "cage": dict(cage),
+            "cage": _cage_dict(cage),
             "attestations": [dict(a) for a in atts],
             "releases": [dict(r) for r in rels],
             "forfeits": [dict(f) for f in fors],
+            "split_legs": [dict(x) for x in legs],
+            "split_decision": dict(minutes) if minutes else None,
         }
 
 
@@ -87,8 +137,8 @@ def freeze_cage(body: CageFreezeIn, authorization: AuthHeader = None):
             now = now_iso()
             cur = conn.execute(
                 """INSERT INTO cages(cage_code,party_key,contract_no,amount,available,
-                   generation,status,beneficiary,created_at,frozen_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                   generation,status,beneficiary,created_at,frozen_at,parent_cage_id,readonly)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,NULL,0)""",
                 (
                     code,
                     body.party_key,

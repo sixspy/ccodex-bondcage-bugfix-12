@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from auth import AuthHeader, require_user, require_writer
+from closure import reject_closed_write
 from db import connect, now_iso, write_audit
 from locks import release, require_lock
 from models import ForfeitIn
@@ -36,6 +37,8 @@ def do_forfeit(body: ForfeitIn, authorization: AuthHeader = None):
             ).fetchone()
             if not cage:
                 raise HTTPException(404, "笼不存在")
+            # 原笼已拆分只读：罚没出金写口同样零增拒收
+            reject_closed_write(conn, cage, user, "罚没")
             if cage["status"] != "核验违约":
                 raise HTTPException(409, "仅核验违约的笼可罚没")
             att = conn.execute(

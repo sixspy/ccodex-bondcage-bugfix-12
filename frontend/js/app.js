@@ -30,7 +30,6 @@ createApp({
       "审计争用",
       "增补拆笼",
     ];
-
     const bonds = ref([]);
     const cages = ref([]);
     const attestations = ref([]);
@@ -48,6 +47,8 @@ createApp({
     const selectedCage = ref(null);
     const topupJobs = ref([]);
     const splitJobs = ref([]);
+    const splitLegs = ref([]);
+    const splitMinutes = ref([]);
 
     const bondForm = ref({
       party_key: "P-NEW",
@@ -110,36 +111,51 @@ createApp({
       return x.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
     }
 
-    function shortStatus(s) {
+    const shortStatus = function (s) {
       if (!s) return "";
+      if (s.includes("拆分")) return "拆";
       if (s.includes("冻结")) return "冻";
       if (s.includes("通过")) return "通";
       if (s.includes("违约")) return "违";
       if (s.includes("解笼")) return "解";
       if (s.includes("罚没")) return "罚";
       return s.slice(0, 1);
-    }
+    };
 
-    function statusClass(s) {
+    const statusClass = function (s) {
       if (!s) return "frozen";
+      if (s.includes("拆分")) return "fail";
       if (s.includes("通过") || s.includes("解笼")) return "pass";
       if (s.includes("违约") || s.includes("罚没")) return "fail";
       if (s.includes("冻结")) return "frozen";
       return "done";
-    }
+    };
 
     const frozenCages = computed(() =>
-      cages.value.filter((c) => c.status === "已冻结")
+      cages.value.filter((c) => c.status === "已冻结" && !c.readonly)
     );
     const passCages = computed(() =>
       cages.value.filter(
-        (c) => c.status === "核验通过" || c.status === "部分解笼"
+        (c) => !c.readonly && (c.status === "核验通过" || c.status === "部分解笼")
       )
     );
     const failCages = computed(() =>
       cages.value.filter(
-        (c) => c.status === "核验违约" || c.status === "部分罚没"
+        (c) => !c.readonly && (c.status === "核验违约" || c.status === "部分罚没")
       )
+    );
+    // 拆笼候选：只允许仍活跃、未落纪要、未核验的已冻结原笼；拆出子笼不再二次拆
+    const splitCandidates = computed(() =>
+      cages.value.filter(
+        (c) =>
+          c.status === "已冻结" &&
+          !c.readonly &&
+          !c.parent_cage_id &&
+          !splitMinutes.value.some((m) => m.cage_id === c.id)
+      )
+    );
+    const topupCandidates = computed(() =>
+      cages.value.filter((c) => !c.readonly)
     );
 
     async function login() {
@@ -181,7 +197,6 @@ createApp({
 
     async function refresh() {
       if (!token.value) return;
-      clearFlash();
       try {
         const [
           b,
@@ -195,6 +210,8 @@ createApp({
           lk,
           tj,
           sj,
+          sl,
+          sm,
         ] = await Promise.all([
           api.bonds(),
           api.cages(),
@@ -207,6 +224,8 @@ createApp({
           api.locks(),
           api.topupJobs(),
           api.splitJobs(),
+          api.splitLegs(),
+          api.splitMinutes(),
         ]);
         bonds.value = b.items || [];
         cages.value = c.items || [];
@@ -219,20 +238,40 @@ createApp({
         locks.value = lk.items || [];
         topupJobs.value = tj.items || [];
         splitJobs.value = sj.items || [];
+        splitLegs.value = sl.items || [];
+        splitMinutes.value = sm.items || [];
         if (!attestForm.value.cage_id && frozenCages.value.length) {
           attestForm.value.cage_id = frozenCages.value[0].id;
+        }
+        if (
+          attestForm.value.cage_id &&
+          !frozenCages.value.some((c) => c.id === attestForm.value.cage_id)
+        ) {
+          attestForm.value.cage_id = frozenCages.value.length ? frozenCages.value[0].id : 0;
         }
         if (!releaseForm.value.cage_id && passCages.value.length) {
           releaseForm.value.cage_id = passCages.value[0].id;
         }
+        if (
+          releaseForm.value.cage_id &&
+          !passCages.value.some((c) => c.id === releaseForm.value.cage_id)
+        ) {
+          releaseForm.value.cage_id = passCages.value.length ? passCages.value[0].id : 0;
+        }
         if (!forfeitForm.value.cage_id && failCages.value.length) {
           forfeitForm.value.cage_id = failCages.value[0].id;
         }
-        if (!topupForm.value.cage_id && cages.value.length) {
-          topupForm.value.cage_id = cages.value[0].id;
+        if (!topupForm.value.cage_id && topupCandidates.value.length) {
+          topupForm.value.cage_id = topupCandidates.value[0].id;
         }
-        if (!splitForm.value.cage_id && cages.value.length) {
-          const cg = cages.value[0];
+        if (
+          splitForm.value.cage_id &&
+          !splitCandidates.value.some((c) => c.id === splitForm.value.cage_id)
+        ) {
+          splitForm.value.cage_id = 0;
+        }
+        if (!splitForm.value.cage_id && splitCandidates.value.length) {
+          const cg = splitCandidates.value[0];
           splitForm.value.cage_id = cg.id;
           const half = Math.floor(Number(cg.available) / 2);
           splitForm.value.left_amount = half;
@@ -301,7 +340,9 @@ createApp({
     async function doAttest() {
       clearFlash();
       try {
-        if (!attestForm.value.cage_id) throw new Error("请选择笼");
+        if (!attestForm.value.cage_id) throw new Error("请选择未关闭的已冻结笼");
+        const target = cages.value.find((c) => c.id === attestForm.value.cage_id);
+        if (target && target.readonly) throw new Error("原笼已拆分只读，禁止再核验");
         await api.attest(attestForm.value);
         flashOk("核验已写入");
         await refresh();
@@ -313,7 +354,9 @@ createApp({
     async function doRelease() {
       clearFlash();
       try {
-        if (!releaseForm.value.cage_id) throw new Error("请选择笼");
+        if (!releaseForm.value.cage_id) throw new Error("请选择核验通过的笼");
+        const target = cages.value.find((c) => c.id === releaseForm.value.cage_id);
+        if (target && target.readonly) throw new Error("原笼已拆分只读，出金只走拆出子笼");
         const payload = { cage_id: releaseForm.value.cage_id };
         if (releaseForm.value.amount) payload.amount = releaseForm.value.amount;
         if (releaseForm.value.payee) payload.payee = releaseForm.value.payee;
@@ -366,6 +409,8 @@ createApp({
       clearFlash();
       try {
         if (!topupForm.value.cage_id) throw new Error("请选择笼");
+        const target = cages.value.find((c) => c.id === topupForm.value.cage_id);
+        if (target && target.readonly) throw new Error("原笼已拆分只读，禁止再增补");
         const row = await api.topupStub(topupForm.value);
         flashOk(`增补空桩已登记 #${row.job_id}`);
         await refresh();
@@ -377,9 +422,11 @@ createApp({
     async function doSplitStub() {
       clearFlash();
       try {
-        if (!splitForm.value.cage_id) throw new Error("请选择笼");
+        if (!splitForm.value.cage_id) throw new Error("请选择未关闭的已冻结原笼");
         const row = await api.splitStub(splitForm.value);
-        flashOk(`拆笼空桩已登记 #${row.job_id}`);
+        const pathNote =
+          row.path === "甲-整笔切分" ? "原笼已拆分只读" : "影子快照，原笼保持活跃";
+        flashOk(`拆笼已登记 #${row.job_id} · ${pathNote}`);
         await refresh();
       } catch (e) {
         flashErr(e);
@@ -417,6 +464,8 @@ createApp({
       selectedCage,
       topupJobs,
       splitJobs,
+      splitLegs,
+      splitMinutes,
       bondForm,
       depositForm,
       freezeForm,
@@ -428,6 +477,8 @@ createApp({
       frozenCages,
       passCages,
       failCages,
+      splitCandidates,
+      topupCandidates,
       login,
       logout,
       refresh,

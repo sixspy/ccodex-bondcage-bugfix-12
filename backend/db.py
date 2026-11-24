@@ -26,7 +26,7 @@ PRODUCT_META = {
         "topup",
         "split",
     ],
-    "stubs": ["topup_cage", "split_cage"],
+    "stubs": ["topup_cage"],
 }
 
 
@@ -77,7 +77,12 @@ CREATE TABLE IF NOT EXISTS cages(
   beneficiary TEXT NOT NULL,
   created_at TEXT NOT NULL,
   frozen_at TEXT,
-  FOREIGN KEY(party_key) REFERENCES bond_accounts(party_key)
+  parent_cage_id INTEGER,
+  readonly INTEGER NOT NULL DEFAULT 0,
+  closed_at TEXT,
+  close_reason TEXT,
+  FOREIGN KEY(party_key) REFERENCES bond_accounts(party_key),
+  FOREIGN KEY(parent_cage_id) REFERENCES cages(id)
 );
 CREATE TABLE IF NOT EXISTS attestations(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -151,6 +156,33 @@ CREATE TABLE IF NOT EXISTS split_jobs(
   detail TEXT,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS split_legs(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id INTEGER NOT NULL,
+  parent_cage_id INTEGER NOT NULL,
+  leg INTEGER NOT NULL,
+  amount REAL NOT NULL,
+  mode TEXT NOT NULL,
+  status TEXT NOT NULL,
+  child_cage_id INTEGER,
+  snapshot TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(job_id) REFERENCES split_jobs(id),
+  FOREIGN KEY(parent_cage_id) REFERENCES cages(id),
+  FOREIGN KEY(child_cage_id) REFERENCES cages(id)
+);
+CREATE TABLE IF NOT EXISTS split_decisions(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  cage_id INTEGER NOT NULL UNIQUE,
+  cage_code TEXT NOT NULL,
+  job_id INTEGER,
+  path TEXT NOT NULL,
+  mode TEXT NOT NULL,
+  closed_status TEXT NOT NULL,
+  no_reopen INTEGER NOT NULL DEFAULT 1,
+  locked_on TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS deposit_ledger(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   party_key TEXT NOT NULL,
@@ -168,6 +200,13 @@ def write_audit(conn: sqlite3.Connection, actor: str, action: str, target: str, 
            VALUES (?,?,?,?,?)""",
         (actor, action, target, json.dumps(payload, ensure_ascii=False), now_iso()),
     )
+
+
+def write_audit_standalone(actor: str, action: str, target: str, payload: dict) -> None:
+    """独立连接落审计：拒写/争用证据不随业务事务回滚而丢失。"""
+    with connect() as conn:
+        write_audit(conn, actor, action, target, payload)
+        conn.commit()
 
 
 def _load_json(name: str):
@@ -269,9 +308,26 @@ def seed_attest_samples(conn: sqlite3.Connection) -> None:
         # 不预置通过/违约结论，只保证表可查；实际核验由业务动作写入
 
 
+def _migrate(conn) -> None:
+    """母仓旧库补列：原笼关闭只读口径。"""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(cages)")}
+    for name, ddl in (
+        ("parent_cage_id", "ALTER TABLE cages ADD COLUMN parent_cage_id INTEGER"),
+        (
+            "readonly",
+            "ALTER TABLE cages ADD COLUMN readonly INTEGER NOT NULL DEFAULT 0",
+        ),
+        ("closed_at", "ALTER TABLE cages ADD COLUMN closed_at TEXT"),
+        ("close_reason", "ALTER TABLE cages ADD COLUMN close_reason TEXT"),
+    ):
+        if name not in cols:
+            conn.execute(ddl)
+
+
 def init_db() -> None:
     with connect() as conn:
         conn.executescript(SCHEMA)
+        _migrate(conn)
         seed_users(conn)
         seed_bonds(conn)
         seed_cages(conn)

@@ -1,7 +1,7 @@
 export const reconcileViewTemplate = `
 <section class="panel">
   <h2>对账互证</h2>
-  <p class="hint">笼口径：可用 + 已拨付 + 已罚没 = 笼总额（同笼代）。当事人口径：账户冻结 = 活笼可用合计。</p>
+  <p class="hint">笼口径：可用 + 已拨付 + 已罚没 + 拆出子笼 = 笼总额（同笼代）。当事人口径：账户冻结 = 活笼可用合计。已拆分原笼若仍出现拨付/罚没，即双轨假绿。</p>
   <div class="actions">
     <button @click="loadReconcile">刷新对账</button>
     <button class="secondary" @click="loadProof">当事人互证</button>
@@ -22,21 +22,25 @@ export const reconcileViewTemplate = `
     <thead>
       <tr>
         <th>笼</th><th>代</th><th>状态</th><th>总额</th><th>可用</th>
-        <th>拨付</th><th>罚没</th><th>合计</th><th>平衡</th><th>缺口</th>
+        <th>拨付</th><th>罚没</th><th>拆出</th><th>合计</th><th>平衡</th><th>双轨</th><th>缺口</th>
       </tr>
     </thead>
     <tbody>
       <tr v-for="i in (recon.items||[])" :key="i.cage_id">
         <td>{{ i.cage_code }}</td>
         <td>{{ i.generation }}</td>
-        <td>{{ i.status }}</td>
+        <td>{{ i.status }}<span v-if="i.closed_readonly" class="badge fail" style="margin-left:4px">只读</span></td>
         <td>{{ fmt(i.amount) }}</td>
         <td>{{ fmt(i.available) }}</td>
         <td>{{ fmt(i.released) }}</td>
         <td>{{ fmt(i.forfeited) }}</td>
+        <td>{{ fmt(i.split_out) }}</td>
         <td>{{ fmt(i.accounted) }}</td>
         <td>
           <span class="badge" :class="i.balanced?'pass':'fail'">{{ i.balanced ? '是' : '否' }}</span>
+        </td>
+        <td>
+          <span class="badge" :class="i.dual_track?'fail':'pass'">{{ i.dual_track ? '双轨' : '单轨' }}</span>
         </td>
         <td>{{ fmt(i.gap) }}</td>
       </tr>

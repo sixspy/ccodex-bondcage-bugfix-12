@@ -1,6 +1,8 @@
 """笼锁与争用登记（公共并发面）。"""
 from __future__ import annotations
 
+import sqlite3
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -15,24 +17,37 @@ class LockIn(BaseModel):
     action: str = "acquire"
 
 
+def _log_contention(conn, lock_key: str, holder: str, detail: str) -> None:
+    now = now_iso()
+    conn.execute(
+        """INSERT INTO contention_log(lock_key,actor,action,detail,created_at)
+           VALUES (?,?,?,?,?)""",
+        (lock_key, holder, "争用", detail, now),
+    )
+    # 争用证据独立落盘：即便调用方随后回滚业务，争用记录仍可脚本复现
+    conn.commit()
+
+
 def try_acquire(conn, lock_key: str, holder: str) -> bool:
     now = now_iso()
     row = conn.execute(
         "SELECT holder FROM cage_locks WHERE lock_key=?", (lock_key,)
     ).fetchone()
     if row is None:
-        conn.execute(
-            "INSERT INTO cage_locks(lock_key,holder,acquired_at) VALUES (?,?,?)",
-            (lock_key, holder, now),
-        )
-        return True
+        try:
+            conn.execute(
+                "INSERT INTO cage_locks(lock_key,holder,acquired_at) VALUES (?,?,?)",
+                (lock_key, holder, now),
+            )
+            conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            # 并发同抢：另一会话先写入，后到只记争用
+            _log_contention(conn, lock_key, holder, "并发同抢：后到")
+            return False
     if row["holder"] == holder:
         return True
-    conn.execute(
-        """INSERT INTO contention_log(lock_key,actor,action,detail,created_at)
-           VALUES (?,?,?,?,?)""",
-        (lock_key, holder, "争用", f"持有者={row['holder']}", now),
-    )
+    _log_contention(conn, lock_key, holder, f"持有者={row['holder']}")
     return False
 
 
